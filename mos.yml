@@ -1,0 +1,35 @@
+author: Suyash Mathema suyashmathema@gmail.com
+type: lib
+description: Modbus master library for mongoose os
+version: 1.0
+
+name: modbus
+
+sources:
+  - src
+includes:
+  - include
+
+config_schema:
+ - ["modbus", "o", {title: "Configuration for Modbus"}]
+ - ["modbus.enable", "b", false, {title: "Enable modbus"}]
+ - ["modbus.timeout", "i", 2000, {title: "Timeout for modbus request"}]
+ - ["modbus.uart_no", "i", 1, {title: "UART to use for Modbus communication"}]
+ - ["modbus.uart_tx_pin", "i", 26, {title: "UART to use for Modbus communication"}]
+ - ["modbus.uart_rx_pin", "i", 25, {title: "UART to use for Modbus communication"}]
+ - ["modbus.tx_en_enable", "b", true, {title: "Enable half duplex mode"}]
+ - ["modbus.tx_en_gpio", "i", 33, {title: "Pin to control half duplex mode"}]
+ - ["modbus.tx_en_gpio_val", "b", true, {title: "TX enable value"}]
+ - ["modbus.baudrate", "i", 9600, {title: "Baud rate, default: 9600"}]
+ - ["modbus.parity", "i", 0, {title: "0: None, 1: Even, 2: Odd, default:None"}]
+ - ["modbus.stop_bits", "i", 1, {title: "1: 1 Bit, 2: 2 Bit, 3: 1.5 Bit, default: 1"}]
+
+libs:
+
+tags:
+  - c
+  - modbus master
+  - esp32
+  - docs:drivers:modbus
+
+manifest_version: 2017-09-29
