@@ -133,50 +133,52 @@ static const uint8_t FUNC_WRITE_MULTIPLE_REGISTERS = 0x10;      ///< Modbus func
 static const uint8_t FUNC_MASK_WRITE_REGISTER = 0x16;           ///< Modbus function 0x16 Mask Write Register
 static const uint8_t FUNC_READ_WRITE_MULTIPLE_REGISTERS = 0x17; ///< Modbus function 0x17 Read Write Multiple Registers
 
+struct mb_request_info {
+  uint8_t slave_id;
+  uint16_t read_address;
+  uint16_t read_qty;
+  uint16_t write_address;
+  uint16_t write_qty;
+  uint8_t mask_and;
+  uint8_t mask_or;
+  uint8_t func_code;
+};
+
 /* Modbus response callback */
-typedef void (*mb_response_callback)(uint8_t status, struct mbuf response, void* param);
+typedef void (*mb_response_callback)(uint8_t status, struct mb_request_info info, struct mbuf response, void* param);
 
+bool mb_read_coils(uint8_t slave_id, uint16_t read_address, uint16_t read_qty,
+                   mb_response_callback cb, void* cb_arg);
 
-bool readCoils(uint8_t slave_id, uint16_t read_address, uint16_t read_qty,
-               mb_response_callback cb, void* cb_arg);
+bool mb_read_discrete_inputs(uint8_t slave_id, uint16_t read_address, uint16_t read_qty,
+                             mb_response_callback cb, void* cb_arg);
 
-bool readDiscreteInputs(uint8_t slave_id, uint16_t read_address, uint16_t read_qty,
-                        mb_response_callback cb, void* cb_arg);
+bool mb_read_holding_registers(uint8_t slave_id, uint16_t read_address, uint16_t read_qty,
+                               mb_response_callback cb, void* cb_arg);
 
-bool readHoldingRegisters(uint8_t slave_id, uint16_t read_address, uint16_t read_qty,
+bool mb_read_input_registers(uint8_t slave_id, uint16_t read_address, uint16_t read_qty,
+                             mb_response_callback cb, void* cb_arg);
+
+bool mb_write_single_coil(uint8_t slave_id, uint16_t write_address, uint16_t write_value,
                           mb_response_callback cb, void* cb_arg);
 
-bool readInputRegisters(uint8_t slave_id, uint16_t read_address, uint16_t read_qty,
-                        mb_response_callback cb, void* cb_arg);
+bool mb_write_single_register(uint8_t slave_id, uint16_t write_address, uint16_t write_value,
+                              mb_response_callback cb, void* cb_arg);
 
-bool writeSingleCoil(uint8_t slave_id, uint16_t write_address, uint16_t write_value,
-                     mb_response_callback cb, void* cb_arg);
+bool mb_write_multiple_coils(uint8_t slave_id, uint16_t write_address, uint16_t write_qty,
+                             uint8_t* data, uint8_t len, mb_response_callback cb, void* cb_arg);
 
-bool writeSingleRegister(uint8_t slave_id, uint16_t write_address, uint16_t write_value,
-                         mb_response_callback cb, void* cb_arg);
+bool mb_write_multiple_registers(uint8_t slave_id, uint16_t write_address, uint16_t write_qty,
+                                 uint8_t* data, uint8_t len, mb_response_callback cb, void* cb_arg);
 
-bool writeMultipleCoils(uint8_t slave_id, uint16_t write_address, uint16_t write_qty,
-                        uint8_t* data, uint8_t len, mb_response_callback cb, void* cb_arg);
+bool mb_read_write_multiple_registers(uint8_t slave_id, uint16_t read_address, uint16_t read_qty,
+                                      uint16_t write_address, uint16_t write_qty, uint8_t* data,
+                                      uint8_t len, mb_response_callback cb, void* cb_arg);
 
-bool writeMultipleRegisters(uint8_t slave_id, uint16_t write_address, uint16_t write_qty,
-                            uint8_t* data, uint8_t len, mb_response_callback cb, void* cb_arg);
+bool mb_mask_write_register(uint8_t slave_id, uint16_t address, uint16_t andMask, uint16_t orMask,
+                            mb_response_callback cb, void* cb_arg);
 
-bool readWriteMultipleRegisters(uint8_t slave_id, uint16_t read_address, uint16_t read_qty,
-                                uint16_t write_address, uint16_t write_qty, uint8_t* data,
-                                uint8_t len, mb_response_callback cb, void* cb_arg);
-
-bool maskWriteRegister(uint8_t slave_id, uint16_t address, uint16_t andMask, uint16_t orMask,
-                       mb_response_callback cb, void* cb_arg);
-
-void init_modbus(uint8_t slave_id, uint8_t func_code, uint8_t total_resp_bytes, mb_response_callback cb, void* cb_arg);
-
-void set_read_address(uint16_t read_address, uint16_t read_qty);
-
-void set_write_address(uint16_t write_address, uint16_t write_qty, uint8_t* data, uint8_t len);
-
-size_t set_transmit_buffer();
-
-bool startTransaction();
+bool mgos_modbus_connect();
 
 #ifdef __cplusplus
 }
