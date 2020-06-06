@@ -13,6 +13,11 @@
 #define lowByte(w) ((uint8_t)((w)&0xff))
 #define highByte(w) ((uint8_t)((w) >> 8))
 
+enum uart_read_states { DISABLED,
+                        READ_START,
+                        RESP_METADATA,
+                        RESP_COMPLETE };
+
 struct mgos_modbus {
   struct mbuf receive_buffer;
   struct mbuf transmit_buffer;
@@ -31,16 +36,16 @@ struct mgos_modbus {
   uint8_t func_code_u8;
   uint8_t resp_status_u8;
   uint8_t resp_bytes_u8;
-  char state; //0: Waiting for response, 1: Idle
+  enum uart_read_states read_state;
 };
 
 static struct mgos_modbus* s_modbus = NULL;
 static mgos_timer_id req_timer;
 
 static void print_buffer(struct mbuf buffer) {
-  char str[512];
+  char str[1024];
   int length = 0;
-  for (int i = 0; i < buffer.len || i < sizeof(str); i++) {
+  for (int i = 0; i < buffer.len && i < sizeof(str)/3; i++) {
     length += sprintf(str + length, "%.2x ", buffer.buf[i]);
   }
   LOG(LL_DEBUG, ("SlaveID: %.2x, Function: %.2x - Buffer: %.*s", s_modbus->slave_id_u8, s_modbus->func_code_u8, length, str));
@@ -76,7 +81,6 @@ static uint8_t verify_crc16(struct mbuf value) {
 static void req_timeout_cb(void* arg) {
   LOG(LL_DEBUG, ("SlaveID: %.2x, Function: %.2x - Request timed out", s_modbus->slave_id_u8, s_modbus->func_code_u8));
   s_modbus->resp_status_u8 = RESP_TIMED_OUT;
-  mgos_uart_set_rx_enabled(s_modbus->uart_no, false);
   struct mb_request_info ri = {
       s_modbus->slave_id_u8,
       s_modbus->read_address_u16,
@@ -88,36 +92,12 @@ static void req_timeout_cb(void* arg) {
       s_modbus->func_code_u8,
   };
   s_modbus->cb(RESP_TIMED_OUT, ri, s_modbus->receive_buffer, s_modbus->cb_arg);
-  s_modbus->state = 1;
+  s_modbus->read_state = DISABLED;
   req_timer = 0;
   (void)arg;
 }
 
-static void uart_cb(int uart_no, void* param) {
-  assert(uart_no == s_modbus->uart_no);
-  struct mbuf* buffer = &s_modbus->receive_buffer;
-  (void)param;
-
-  size_t rx_av = mgos_uart_read_avail(uart_no);
-  if (s_modbus->state || rx_av == 0 || rx_av + buffer->len < s_modbus->resp_bytes_u8) {
-    return;
-  }
-  LOG(LL_DEBUG, ("SlaveID: %.2x, Function: %.2x - uart_cb - Receive Buffer: %d, Read Available: %d",
-                 s_modbus->slave_id_u8, s_modbus->func_code_u8, s_modbus->receive_buffer.len, rx_av));
-  mgos_uart_read_mbuf(uart_no, buffer, rx_av);
-
-  /*Trim any invalid characters received before slave id*/
-  int trim_len = 0;
-  for (int i = 0; i < buffer->len; i++) {
-    if (buffer->buf[i] == s_modbus->slave_id_u8) {
-      mbuf_remove(buffer, trim_len);
-      if (buffer->len < s_modbus->resp_bytes_u8) {
-        return;
-      }
-    }
-    trim_len++;
-  }
-
+static bool validate_mb_metadata(struct mbuf* buffer) {
   // verify response is for correct Modbus slave
   if ((uint8_t)buffer->buf[0] != s_modbus->slave_id_u8) {
     s_modbus->resp_status_u8 = RESP_INVALID_SLAVE_ID;
@@ -131,28 +111,10 @@ static void uart_cb(int uart_no, void* param) {
     s_modbus->resp_status_u8 = (uint8_t)buffer->buf[2];
   }
 
-  struct mb_request_info ri = {
-      s_modbus->slave_id_u8,
-      s_modbus->read_address_u16,
-      s_modbus->read_qty_u16,
-      s_modbus->write_address_u16,
-      s_modbus->write_qty_u16,
-      s_modbus->mask_and,
-      s_modbus->mask_or,
-      s_modbus->func_code_u8,
-  };
-
   if (s_modbus->resp_status_u8) {
-    LOG(LL_DEBUG, ("SlaveID: %.2x, Function: %.2x - Invalid Response: %.2x, SlaveID: %.2x, Function: %.2x",
-                   s_modbus->slave_id_u8, s_modbus->func_code_u8, s_modbus->resp_status_u8,
-                   (uint8_t)buffer->buf[0], (uint8_t)buffer->buf[1]));
-    print_buffer(s_modbus->receive_buffer);
-    mgos_clear_timer(req_timer);
-    mgos_uart_set_rx_enabled(s_modbus->uart_no, false);
-    s_modbus->cb(s_modbus->resp_status_u8, ri, s_modbus->receive_buffer, s_modbus->cb_arg);
-    s_modbus->state = 1;
-    return;
+    return false;
   }
+
   // evaluate returned Modbus function code
   uint8_t resp_func = buffer->buf[1];
   if (resp_func == FUNC_READ_COILS ||
@@ -169,38 +131,104 @@ static void uart_cb(int uart_no, void* param) {
   } else if (resp_func == FUNC_MASK_WRITE_REGISTER) {
     s_modbus->resp_bytes_u8 = 10;
   }
+  return true;
+}
 
-  if (buffer->len < s_modbus->resp_bytes_u8) {
+static void update_modbus_read_state(struct mbuf* buffer) {
+  struct mb_request_info ri = {
+      s_modbus->slave_id_u8,
+      s_modbus->read_address_u16,
+      s_modbus->read_qty_u16,
+      s_modbus->write_address_u16,
+      s_modbus->write_qty_u16,
+      s_modbus->mask_and,
+      s_modbus->mask_or,
+      s_modbus->func_code_u8,
+  };
+
+  switch (s_modbus->read_state) {
+  case DISABLED:
+    /*
+    Do not disable RX on default condition similar to RS485 control.
+    Buffer piles up with grabage values once it is enabled. Just discard
+    any values received while not expecting any response.
+    */
+    mbuf_clear(buffer);
+    return;
+  case READ_START:
+    LOG(LL_VERBOSE_DEBUG, ("SlaveID: %.2x, Function: %.2x - Read modbus response start", s_modbus->slave_id_u8, s_modbus->func_code_u8));
+    int count = 0;
+    for (int i = 0; i < buffer->len; i++) {
+      if (buffer->buf[i] != s_modbus->slave_id_u8) {
+        count++;
+      } else {
+        mbuf_remove(buffer, count);
+        s_modbus->read_state = RESP_METADATA;
+        update_modbus_read_state(buffer);
+        return;
+      }
+    }
+    mbuf_remove(buffer, count);
+    return;
+  case RESP_METADATA:
+    if (buffer->len < s_modbus->resp_bytes_u8) {
+      return;
+    }
+    if (!validate_mb_metadata(buffer)) {
+      LOG(LL_DEBUG, ("SlaveID: %.2x, Function: %.2x - Invalid Response: %.2x, SlaveID: %.2x, Function: %.2x",
+                     s_modbus->slave_id_u8, s_modbus->func_code_u8, s_modbus->resp_status_u8,
+                     (uint8_t)buffer->buf[0], (uint8_t)buffer->buf[1]));
+      break;
+    }
+    s_modbus->read_state = RESP_COMPLETE;
+    update_modbus_read_state(buffer);
+    return;
+  case RESP_COMPLETE:
+    if (buffer->len < s_modbus->resp_bytes_u8) {
+      return;
+    }
+    buffer->len = s_modbus->resp_bytes_u8;
+    if (verify_crc16(*buffer) == RESP_INVALID_CRC) {
+      LOG(LL_DEBUG, ("SlaveID: %.2x, Function: %.2x - Invalid CRC", s_modbus->slave_id_u8, s_modbus->func_code_u8));
+      s_modbus->resp_status_u8 = RESP_INVALID_CRC;
+      break;
+    }
+
+    LOG(LL_DEBUG, ("SlaveID: %.2x, Function: %.2x - Modbus response received %d",
+                   s_modbus->slave_id_u8, s_modbus->func_code_u8, s_modbus->receive_buffer.len));
+    s_modbus->resp_status_u8 = RESP_SUCCESS;
+    break;
+  default:
     return;
   }
-
-  if (verify_crc16(*buffer) == RESP_INVALID_CRC) {
-    LOG(LL_DEBUG, ("SlaveID: %.2x, Function: %.2x - Invalid CRC", s_modbus->slave_id_u8, s_modbus->func_code_u8));
-    print_buffer(s_modbus->receive_buffer);
-    s_modbus->resp_status_u8 = RESP_INVALID_CRC;
-    mgos_clear_timer(req_timer);
-    mgos_uart_set_rx_enabled(s_modbus->uart_no, false);
-    s_modbus->cb(s_modbus->resp_status_u8, ri, s_modbus->receive_buffer, s_modbus->cb_arg);
-    s_modbus->state = 1;
-    return;
-  }
-
-  LOG(LL_DEBUG, ("SlaveID: %.2x, Function: %.2x - Modbus response received %d",
-                 s_modbus->slave_id_u8, s_modbus->func_code_u8, s_modbus->receive_buffer.len));
   print_buffer(s_modbus->receive_buffer);
-
   mgos_clear_timer(req_timer);
-  mgos_uart_set_rx_enabled(s_modbus->uart_no, false);
-  s_modbus->cb(RESP_SUCCESS, ri, s_modbus->receive_buffer, s_modbus->cb_arg);
-  s_modbus->state = 1;
+  s_modbus->cb(s_modbus->resp_status_u8, ri, s_modbus->receive_buffer, s_modbus->cb_arg);
+  s_modbus->read_state = DISABLED;
+}
+
+static void uart_cb(int uart_no, void* param) {
+  (void)param;
+  assert(uart_no == s_modbus->uart_no);
+  struct mbuf* buffer = &s_modbus->receive_buffer;
+
+  size_t rx_av = mgos_uart_read_avail(uart_no);
+  if (rx_av == 0) {
+    return;
+  }
+
+  mgos_uart_read_mbuf(uart_no, buffer, rx_av);
+  LOG(LL_VERBOSE_DEBUG, ("SlaveID: %.2x, Function: %.2x - uart_cb - Receive Buffer: %d, Read Available: %d",
+                         s_modbus->slave_id_u8, s_modbus->func_code_u8, s_modbus->receive_buffer.len, rx_av));
+  update_modbus_read_state(buffer);
 }
 
 static bool init_modbus(uint8_t slave_id, uint8_t func_code, uint8_t total_resp_bytes, mb_response_callback cb, void* cb_arg) {
-  if (!s_modbus->state)
+  if (s_modbus->read_state != DISABLED)
     return false;
   s_modbus->cb = cb;
   s_modbus->cb_arg = cb_arg;
-  s_modbus->resp_bytes_u8 = 4;
+  s_modbus->resp_bytes_u8 = total_resp_bytes;
   s_modbus->slave_id_u8 = slave_id;
   s_modbus->func_code_u8 = func_code;
   LOG(LL_DEBUG, ("SlaveID: %.2x, Function: %.2x - Initialize Modbus", s_modbus->slave_id_u8, s_modbus->func_code_u8));
@@ -273,16 +301,15 @@ static bool start_transaction() {
   mbuf_clear(&s_modbus->receive_buffer);
   s_modbus->resp_status_u8 = 0x00;
 
-  if (s_modbus->state && s_modbus->transmit_buffer.len > 0) {
+  if (s_modbus->read_state == DISABLED && s_modbus->transmit_buffer.len > 0) {
     LOG(LL_DEBUG, ("SlaveID: %.2x, Function: %.2x - Modbus Transaction Start", s_modbus->slave_id_u8, s_modbus->func_code_u8));
-    s_modbus->state = 0;
-    mgos_uart_set_rx_enabled(s_modbus->uart_no, false);
+    s_modbus->read_state = READ_START;
     mgos_uart_flush(s_modbus->uart_no);
     mgos_msleep(30); //TODO delay for 3.5 Characters length according to baud rate
     req_timer = mgos_set_timer(mgos_sys_config_get_modbus_timeout(), 0, req_timeout_cb, NULL);
     mgos_uart_write(s_modbus->uart_no, s_modbus->transmit_buffer.buf, s_modbus->transmit_buffer.len);
-    mgos_uart_set_dispatcher(s_modbus->uart_no, uart_cb, &req_timer);
     mgos_uart_set_rx_enabled(s_modbus->uart_no, true);
+    mgos_uart_set_dispatcher(s_modbus->uart_no, uart_cb, &req_timer);
     return true;
   }
   return false;
@@ -428,10 +455,10 @@ bool mgos_modbus_create(const struct mgos_config_modbus* cfg) {
 
   char b1[8], b2[8], b3[8];
   LOG(LL_DEBUG, ("MODBUS UART%d (RX:%s TX:%s TX_EN:%s), Baudrate %d, Parity %d, Stop bits %d, Half Duplex %d, tx_en Value %d",
-                cfg->uart_no, mgos_gpio_str(ucfg.dev.rx_gpio, b1),
-                mgos_gpio_str(ucfg.dev.tx_gpio, b2),
-                mgos_gpio_str(ucfg.dev.tx_en_gpio, b3), ucfg.baud_rate,
-                ucfg.parity, ucfg.stop_bits, ucfg.dev.hd, ucfg.dev.tx_en_gpio_val));
+                 cfg->uart_no, mgos_gpio_str(ucfg.dev.rx_gpio, b1),
+                 mgos_gpio_str(ucfg.dev.tx_gpio, b2),
+                 mgos_gpio_str(ucfg.dev.tx_en_gpio, b3), ucfg.baud_rate,
+                 ucfg.parity, ucfg.stop_bits, ucfg.dev.hd, ucfg.dev.tx_en_gpio_val));
 
   if (!mgos_uart_configure(cfg->uart_no, &ucfg)) {
     LOG(LL_ERROR, ("Failed to configure UART%d", cfg->uart_no));
@@ -443,10 +470,9 @@ bool mgos_modbus_create(const struct mgos_config_modbus* cfg) {
     return false;
   mbuf_init(&s_modbus->transmit_buffer, 300);
   mbuf_init(&s_modbus->receive_buffer, 300);
-  s_modbus->state = 1;
+  s_modbus->read_state = DISABLED;
   s_modbus->uart_no = cfg->uart_no;
 
-  mgos_uart_set_rx_enabled(cfg->uart_no, false);
   return true;
 }
 
@@ -454,16 +480,16 @@ bool mgos_modbus_connect() {
   struct mgos_config_modbus* cfg = &mgos_sys_config.modbus;
   struct mgos_uart_config ucfg;
   char b1[8], b2[8], b3[8];
-  LOG(LL_INFO, ("MODBUS UART%d (RX:%s TX:%s TX_EN:%s), Baudrate %d, Parity %d, Stop bits %d, Half Duplex %d, tx_en Value %d",
-                cfg->uart_no, mgos_gpio_str(ucfg.dev.rx_gpio, b1),
-                mgos_gpio_str(ucfg.dev.tx_gpio, b2),
-                mgos_gpio_str(ucfg.dev.tx_en_gpio, b3), ucfg.baud_rate,
-                ucfg.parity, ucfg.stop_bits, ucfg.dev.hd, ucfg.dev.tx_en_gpio_val));
   mgos_uart_config_get(mgos_sys_config.modbus.uart_no, &ucfg);
   if (!mgos_uart_configure(cfg->uart_no, &ucfg)) {
     LOG(LL_ERROR, ("Failed to configure UART%d", cfg->uart_no));
     return false;
   }
+  LOG(LL_DEBUG, ("MODBUS UART%d (RX:%s TX:%s TX_EN:%s), Baudrate %d, Parity %d, Stop bits %d, Half Duplex %d, tx_en Value %d",
+                 cfg->uart_no, mgos_gpio_str(ucfg.dev.rx_gpio, b1),
+                 mgos_gpio_str(ucfg.dev.tx_gpio, b2),
+                 mgos_gpio_str(ucfg.dev.tx_en_gpio, b3), ucfg.baud_rate,
+                 ucfg.parity, ucfg.stop_bits, ucfg.dev.hd, ucfg.dev.tx_en_gpio_val));
   return true;
 }
 
