@@ -1,3 +1,20 @@
+/*
+ * Copyright (c) 2014-2018 Cesanta Software Limited
+ * All rights reserved
+ *
+ * Licensed under the Apache License, Version 2.0 (the ""License"");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an ""AS IS"" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -45,7 +62,7 @@ static mgos_timer_id req_timer;
 static void print_buffer(struct mbuf buffer) {
   char str[1024];
   int length = 0;
-  for (int i = 0; i < buffer.len && i < sizeof(str)/3; i++) {
+  for (int i = 0; i < buffer.len && i < sizeof(str) / 3; i++) {
     length += sprintf(str + length, "%.2x ", buffer.buf[i]);
   }
   LOG(LL_DEBUG, ("SlaveID: %.2x, Function: %.2x - Buffer: %.*s", s_modbus->slave_id_u8, s_modbus->func_code_u8, length, str));
@@ -78,6 +95,9 @@ static uint8_t verify_crc16(struct mbuf value) {
   return RESP_SUCCESS;
 }
 
+/*
+Callback function that is called when a set timeout period expires before receiving a response.
+*/
 static void req_timeout_cb(void* arg) {
   LOG(LL_DEBUG, ("SlaveID: %.2x, Function: %.2x - Request timed out", s_modbus->slave_id_u8, s_modbus->func_code_u8));
   s_modbus->resp_status_u8 = RESP_TIMED_OUT;
@@ -97,6 +117,10 @@ static void req_timeout_cb(void* arg) {
   (void)arg;
 }
 
+/*
+To validate slave id, function code and modbus exception in the response and
+estimate size of the requested data from the response.
+*/
 static bool validate_mb_metadata(struct mbuf* buffer) {
   // verify response is for correct Modbus slave
   if ((uint8_t)buffer->buf[0] != s_modbus->slave_id_u8) {
@@ -115,7 +139,7 @@ static bool validate_mb_metadata(struct mbuf* buffer) {
     return false;
   }
 
-  // evaluate returned Modbus function code
+  // evaluate returned Modbus function code to get modbus requested data size
   uint8_t resp_func = buffer->buf[1];
   if (resp_func == FUNC_READ_COILS ||
       resp_func == FUNC_READ_DISCRETE_INPUTS ||
@@ -315,6 +339,9 @@ static bool start_transaction() {
   return false;
 }
 
+/*
+Read coils from modbus slave, callback function is called when response from modbus is completed or timed out.
+*/
 bool mb_read_coils(uint8_t slave_id, uint16_t read_address, uint16_t read_qty, mb_response_callback cb, void* cb_arg) {
   LOG(LL_DEBUG, ("Read Coils, Address: %.2x", read_address));
   if (!init_modbus(slave_id, FUNC_READ_COILS, 5, cb, cb_arg))
@@ -326,6 +353,9 @@ bool mb_read_coils(uint8_t slave_id, uint16_t read_address, uint16_t read_qty, m
   return start_transaction();
 }
 
+/*
+Read discrete inputs from modbus slave, callback function is called when response from modbus is completed or timed out.
+*/
 bool mb_read_discrete_inputs(uint8_t slave_id, uint16_t read_address, uint16_t read_qty, mb_response_callback cb, void* cb_arg) {
   LOG(LL_DEBUG, ("Read Discrete Inputs, Address: %.2x", read_address));
   if (!init_modbus(slave_id, FUNC_READ_DISCRETE_INPUTS, 5, cb, cb_arg))
@@ -337,6 +367,9 @@ bool mb_read_discrete_inputs(uint8_t slave_id, uint16_t read_address, uint16_t r
   return start_transaction();
 }
 
+/*
+Read holding registers from modbus slave, callback function is called when response from modbus is completed or timed out.
+*/
 bool mb_read_holding_registers(uint8_t slave_id, uint16_t read_address, uint16_t read_qty, mb_response_callback cb, void* cb_arg) {
   LOG(LL_DEBUG, ("Read Holding Registers, Address: %.2x", read_address));
   if (!init_modbus(slave_id, FUNC_READ_HOLDING_REGISTERS, 5, cb, cb_arg))
@@ -348,6 +381,9 @@ bool mb_read_holding_registers(uint8_t slave_id, uint16_t read_address, uint16_t
   return start_transaction();
 }
 
+/*
+Read input registers from modbus slave, callback function is called when response from modbus is completed or timed out.
+*/
 bool mb_read_input_registers(uint8_t slave_id, uint16_t read_address, uint16_t read_qty, mb_response_callback cb, void* cb_arg) {
   LOG(LL_DEBUG, ("Read Input Registers, Address: %.2x", read_address));
   if (!init_modbus(slave_id, FUNC_READ_INPUT_REGISTERS, 5, cb, cb_arg))
@@ -359,6 +395,9 @@ bool mb_read_input_registers(uint8_t slave_id, uint16_t read_address, uint16_t r
   return start_transaction();
 }
 
+/*
+Write coil in modbus slave, callback function is called when response from modbus is completed or timed out.
+*/
 bool mb_write_single_coil(uint8_t slave_id, uint16_t write_address, uint16_t write_value, mb_response_callback cb, void* cb_arg) {
   LOG(LL_DEBUG, ("Write Single Coil, Address: %.2x", write_address));
   if (!init_modbus(slave_id, FUNC_WRITE_SINGLE_COIL, 4, cb, cb_arg))
@@ -370,6 +409,9 @@ bool mb_write_single_coil(uint8_t slave_id, uint16_t write_address, uint16_t wri
   return start_transaction();
 }
 
+/*
+Write register in modbus slave, callback function is called when response from modbus is completed or timed out.
+*/
 bool mb_write_single_register(uint8_t slave_id, uint16_t write_address, uint16_t write_value, mb_response_callback cb, void* cb_arg) {
   LOG(LL_DEBUG, ("Write Single Register, Address: %.2x", write_address));
   if (!init_modbus(slave_id, FUNC_WRITE_SINGLE_REGISTER, 4, cb, cb_arg))
@@ -381,6 +423,9 @@ bool mb_write_single_register(uint8_t slave_id, uint16_t write_address, uint16_t
   return start_transaction();
 }
 
+/*
+Write coils in modbus slave, callback function is called when response from modbus is completed or timed out.
+*/
 bool mb_write_multiple_coils(uint8_t slave_id, uint16_t write_address, uint16_t write_qty,
                              uint8_t* data, uint8_t len, mb_response_callback cb, void* cb_arg) {
   LOG(LL_DEBUG, ("Write Multiple Coils, Address: %.2x", write_address));
@@ -393,6 +438,9 @@ bool mb_write_multiple_coils(uint8_t slave_id, uint16_t write_address, uint16_t 
   return start_transaction();
 }
 
+/*
+Write registers in modbus slave, callback function is called when response from modbus is completed or timed out.
+*/
 bool mb_write_multiple_registers(uint8_t slave_id, uint16_t write_address, uint16_t write_qty,
                                  uint8_t* data, uint8_t len, mb_response_callback cb, void* cb_arg) {
   LOG(LL_DEBUG, ("Write Multiple Registers, Address: %.2x", write_address));
@@ -405,6 +453,9 @@ bool mb_write_multiple_registers(uint8_t slave_id, uint16_t write_address, uint1
   return start_transaction();
 }
 
+/*
+Read and write mulitple registers in modbus slave, callback function is called when response from modbus is completed or timed out.
+*/
 bool mb_read_write_multiple_registers(uint8_t slave_id, uint16_t read_address, uint16_t read_qty,
                                       uint16_t write_address, uint16_t write_qty,
                                       uint8_t* data, uint8_t len, mb_response_callback cb, void* cb_arg) {
@@ -418,6 +469,9 @@ bool mb_read_write_multiple_registers(uint8_t slave_id, uint16_t read_address, u
   return start_transaction();
 }
 
+/*
+Mask register in modbus slave, callback function is called when response from modbus is completed or timed out.
+*/
 bool mb_mask_write_register(uint8_t slave_id, uint16_t address, uint16_t and_mask, uint16_t or_mask, mb_response_callback cb, void* cb_arg) {
   LOG(LL_DEBUG, ("Mask Write Register, Address: %.2x", address));
   if (!init_modbus(slave_id, FUNC_MASK_WRITE_REGISTER, 4, cb, cb_arg))
