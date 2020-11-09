@@ -18,10 +18,10 @@
 #ifndef CS_MOS_LIBS_MODBUS_INCLUDE_MGOS_MODBUS_H_
 #define CS_MOS_LIBS_MODBUS_INCLUDE_MGOS_MODBUS_H_
 
-#include <stdint.h>
+#include "mgos.h"
 
 #if defined(__cplusplus)
-extern "C" { // Make sure we have C-declarations in C++ programs
+extern "C" {  // Make sure we have C-declarations in C++ programs
 #endif
 
 // Modbus exception codes
@@ -137,28 +137,28 @@ static const uint8_t RESP_TIMED_OUT = 0xE2;
 static const uint8_t RESP_INVALID_CRC = 0xE3;
 
 // Modbus function codes for bit access
-static const uint8_t FUNC_READ_COILS = 0x01;           ///< Modbus function 0x01 Read Coils
-static const uint8_t FUNC_READ_DISCRETE_INPUTS = 0x02; ///< Modbus function 0x02 Read Discrete Inputs
-static const uint8_t FUNC_WRITE_SINGLE_COIL = 0x05;    ///< Modbus function 0x05 Write Single Coil
-static const uint8_t FUNC_WRITE_MULTIPLE_COILS = 0x0F; ///< Modbus function 0x0F Write Multiple Coils
+static const uint8_t FUNC_READ_COILS = 0x01;            ///< Modbus function 0x01 Read Coils
+static const uint8_t FUNC_READ_DISCRETE_INPUTS = 0x02;  ///< Modbus function 0x02 Read Discrete Inputs
+static const uint8_t FUNC_WRITE_SINGLE_COIL = 0x05;     ///< Modbus function 0x05 Write Single Coil
+static const uint8_t FUNC_WRITE_MULTIPLE_COILS = 0x0F;  ///< Modbus function 0x0F Write Multiple Coils
 
 // Modbus function codes for 16 bit access
-static const uint8_t FUNC_READ_HOLDING_REGISTERS = 0x03;        ///< Modbus function 0x03 Read Holding Registers
-static const uint8_t FUNC_READ_INPUT_REGISTERS = 0x04;          ///< Modbus function 0x04 Read Input Registers
-static const uint8_t FUNC_WRITE_SINGLE_REGISTER = 0x06;         ///< Modbus function 0x06 Write Single Register
-static const uint8_t FUNC_WRITE_MULTIPLE_REGISTERS = 0x10;      ///< Modbus function 0x10 Write Multiple Registers
-static const uint8_t FUNC_MASK_WRITE_REGISTER = 0x16;           ///< Modbus function 0x16 Mask Write Register
-static const uint8_t FUNC_READ_WRITE_MULTIPLE_REGISTERS = 0x17; ///< Modbus function 0x17 Read Write Multiple Registers
+static const uint8_t FUNC_READ_HOLDING_REGISTERS = 0x03;         ///< Modbus function 0x03 Read Holding Registers
+static const uint8_t FUNC_READ_INPUT_REGISTERS = 0x04;           ///< Modbus function 0x04 Read Input Registers
+static const uint8_t FUNC_WRITE_SINGLE_REGISTER = 0x06;          ///< Modbus function 0x06 Write Single Register
+static const uint8_t FUNC_WRITE_MULTIPLE_REGISTERS = 0x10;       ///< Modbus function 0x10 Write Multiple Registers
+static const uint8_t FUNC_MASK_WRITE_REGISTER = 0x16;            ///< Modbus function 0x16 Mask Write Register
+static const uint8_t FUNC_READ_WRITE_MULTIPLE_REGISTERS = 0x17;  ///< Modbus function 0x17 Read Write Multiple Registers
 
 struct mb_request_info {
-  uint8_t slave_id;
-  uint16_t read_address;
-  uint16_t read_qty;
-  uint16_t write_address;
-  uint16_t write_qty;
-  uint8_t mask_and;
-  uint8_t mask_or;
-  uint8_t func_code;
+    uint8_t slave_id;
+    uint16_t read_address;
+    uint16_t read_qty;
+    uint16_t write_address;
+    uint16_t write_qty;
+    uint8_t mask_and;
+    uint8_t mask_or;
+    uint8_t func_code;
 };
 
 /* Modbus response callback */
@@ -194,6 +194,14 @@ bool mb_read_write_multiple_registers(uint8_t slave_id, uint16_t read_address, u
 
 bool mb_mask_write_register(uint8_t slave_id, uint16_t address, uint16_t andMask, uint16_t orMask,
                             mb_response_callback cb, void* cb_arg);
+
+long parse_value_long_inverse_32(uint8_t* value);
+
+float parse_value_float32(uint8_t* value);
+
+char* mb_map_response(const char* json_map, struct mbuf* mb_resp, struct mb_request_info* info);
+
+char* mb_map_responsef(const char* json_file, struct mbuf* mb_resp, struct mb_request_info* info);
 
 bool mgos_modbus_connect();
 
