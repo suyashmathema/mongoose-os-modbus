@@ -29,8 +29,9 @@ enum uart_read_states { DISABLED,
                         RESP_COMPLETE };
 
 enum MB_VALUE_TYPE {
-    TYPE_FLOAT_32,
-    TYPE_LONG_INV_32
+    MAP_TYPE_HEX,
+    MAP_TYPE_FLOAT_32,
+    MAP_TYPE_LONG_INV_32
 };
 
 struct mgos_modbus {
@@ -564,7 +565,7 @@ float parse_value_float32(uint8_t* strt_ptr) {
 
 enum MB_VALUE_TYPE parse_address_info(struct json_token address_info, int* address) {
     *address = -1;
-    enum MB_VALUE_TYPE type = TYPE_FLOAT_32;
+    enum MB_VALUE_TYPE type = MAP_TYPE_HEX;
 
     json_scanf(address_info.ptr, address_info.len, "%d", address);
     if (*address < 0) {
@@ -572,14 +573,13 @@ enum MB_VALUE_TYPE parse_address_info(struct json_token address_info, int* addre
         json_scanf(address_info.ptr, address_info.len, "{add: %d, type: %Q}", address, &type_temp);
         if (type_temp != NULL) {
             if (strcmp(type_temp, "float") == 0) {
-                type = TYPE_FLOAT_32;
+                type = MAP_TYPE_FLOAT_32;
             } else if (strcmp(type_temp, "long_inv") == 0) {
-                type = TYPE_LONG_INV_32;
+                type = MAP_TYPE_LONG_INV_32;
             }
             free(type_temp);
         }
     }
-    LOG(LL_DEBUG, ("Address Info, Value: %d, Type: %d", *address, type));
     return type;
 }
 
@@ -587,12 +587,12 @@ int get_buffer_offset(uint16_t read_start_address, uint8_t byte_count, uint16_t 
     int read_qty = byte_count / 2;
     int max_read_address = read_start_address + read_qty - 1;
     if (required_address < read_start_address || required_address >= max_read_address) {
-        LOG(LL_DEBUG, ("Invalid address, address out of range"));
+        LOG(LL_INFO, ("Invalid address, address out of range"));
         return -1;
     }
     int diff = required_address - read_start_address;
     if (diff % 2 != 0) {
-        LOG(LL_DEBUG, ("Invalid address, address value not consistent"));
+        LOG(LL_INFO, ("Invalid address, address value not consistent"));
         return -1;
     }
     return diff * 2 + 3;
@@ -603,27 +603,29 @@ char* get_attribute_value(struct mbuf* mb_reponse, uint16_t read_start_address, 
     int required_address = -1;
     enum MB_VALUE_TYPE type = parse_address_info(attr_info, &required_address);
     if (required_address < 0) {
-        LOG(LL_DEBUG, ("Cannot find address in modbus response"));
+        LOG(LL_INFO, ("Cannot find address in modbus response"));
         return NULL;
     }
 
     int offset = get_buffer_offset(read_start_address, (uint8_t)mb_reponse->buf[2], required_address);
-    LOG(LL_DEBUG, ("Calculated offset for attribute: %d, address: %d, value type: %d",
-                   offset, required_address, type));
+    LOG(LL_DEBUG, ("Attribute info - offset: %d, address: %d, type: %d", offset, required_address, type));
     if (offset < 0) {
-        LOG(LL_DEBUG, ("Invalid address"));
+        LOG(LL_INFO, ("Invalid address"));
         return NULL;
     }
     uint8_t* start_position = (uint8_t*)mb_reponse->buf + offset;
     char* res = NULL;
     switch (type) {
-        case TYPE_FLOAT_32:
+        case MAP_TYPE_FLOAT_32:
             mg_asprintf(&res, 0, "%.2f", parse_value_float32(start_position));
             break;
-        case TYPE_LONG_INV_32:
+        case MAP_TYPE_LONG_INV_32:
             mg_asprintf(&res, 0, "%ld", parse_value_long_inverse_32(start_position));
             break;
+        case MAP_TYPE_HEX:
         default:
+            mg_asprintf(&res, 0, "\"0x%X%X%X%X\"", *start_position,
+                        *(start_position + 1), *(start_position + 2), *(start_position + 3));
             break;
     }
     return res;
@@ -648,18 +650,19 @@ char* set_resp_json(struct mbuf* json_buf, char* offset, const char* key,
     }
     char* kv = NULL;
     mg_asprintf(&kv, 0, "\"%.*s\":%.*s", key_len, key, value_len, value);
-    if (kv != NULL) {
-        if ((p = mbuf_insert(json_buf, (int)(offset - json_buf->buf), kv, strlen(kv))) <= 0) {
-            return NULL;
-        }
-        offset += p;
-        free(kv);
+    if (kv == NULL) {
+        return NULL;
     }
+    if ((p = mbuf_insert(json_buf, (int)(offset - json_buf->buf), kv, strlen(kv))) <= 0) {
+        return NULL;
+    }
+    offset += p;
+    free(kv);
     return offset;
 }
 
-char* mb_map_response(const char* json_map, struct mbuf* mb_resp, struct mb_request_info* info) {
-    LOG(LL_ERROR, ("Map modbus response to json"));
+char* mb_map_register_response(const char* json_map, struct mbuf* mb_resp, struct mb_request_info* info) {
+    LOG(LL_INFO, ("Map modbus response to json"));
     void* h = NULL;
     char* offset = NULL;
     struct json_token attr_name, attr_info;
@@ -668,6 +671,7 @@ char* mb_map_response(const char* json_map, struct mbuf* mb_resp, struct mb_requ
     while ((h = json_next_key(json_map, strlen(json_map), h, ".", &attr_name, &attr_info)) != NULL) {
         char* attr_value = NULL;
         if ((attr_value = get_attribute_value(mb_resp, info->read_address, attr_info)) != NULL) {
+            LOG(LL_VERBOSE_DEBUG, ("Attribute value for %.*s: %s", attr_name.len, attr_name.ptr, attr_value));
             if ((offset = set_resp_json(&resp_buf, offset, attr_name.ptr, attr_name.len,
                                         attr_value, strlen(attr_value))) == NULL) {
                 LOG(LL_ERROR, ("Unable to create modbus mapped response json"));
@@ -682,13 +686,13 @@ char* mb_map_response(const char* json_map, struct mbuf* mb_resp, struct mb_requ
     return resp;
 }
 
-char* mb_map_responsef(const char* json_file, struct mbuf* mb_resp, struct mb_request_info* info) {
+char* mb_map_register_responsef(const char* json_file, struct mbuf* mb_resp, struct mb_request_info* info) {
     char* map_str = json_fread(json_file);
     if (map_str == NULL) {
         LOG(LL_ERROR, ("Error reading modbus json map file"));
         return NULL;
     }
-    char* resp = mb_map_response(map_str, mb_resp, info);
+    char* resp = mb_map_register_response(map_str, mb_resp, info);
     free(map_str);
     return resp;
 }

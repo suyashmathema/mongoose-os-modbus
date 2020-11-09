@@ -199,9 +199,9 @@ long parse_value_long_inverse_32(uint8_t* value);
 
 float parse_value_float32(uint8_t* value);
 
-char* mb_map_response(const char* json_map, struct mbuf* mb_resp, struct mb_request_info* info);
+char* mb_map_register_response(const char* json_map, struct mbuf* mb_resp, struct mb_request_info* info);
 
-char* mb_map_responsef(const char* json_file, struct mbuf* mb_resp, struct mb_request_info* info);
+char* mb_map_register_responsef(const char* json_file, struct mbuf* mb_resp, struct mb_request_info* info);
 
 bool mgos_modbus_connect();
 
