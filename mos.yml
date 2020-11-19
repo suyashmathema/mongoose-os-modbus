@@ -24,6 +24,9 @@ config_schema:
   - ["modbus.parity", "i", 0, {title: "0: None, 1: Even, 2: Odd, default:None"}]
   - ["modbus.stop_bits", "i", 1, {title: "1: 1 Bit, 2: 2 Bit, 3: 1.5 Bit, default: 1"}]
 
+libs:
+  - origin: https://github.com/mongoose-os-libs/rpc-common
+  
 tags:
   - c
   - modbus master

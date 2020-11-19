@@ -195,14 +195,35 @@ bool mb_read_write_multiple_registers(uint8_t slave_id, uint16_t read_address, u
 bool mb_mask_write_register(uint8_t slave_id, uint16_t address, uint16_t andMask, uint16_t orMask,
                             mb_response_callback cb, void* cb_arg);
 
-long parse_value_long_inverse_32(uint8_t* value);
+/*
+Currently supported type: float, long inverse and hex(default)
+Sample json map:
+{
+    "W_total": {
+        "type": "float",
+        "add": 100
+    },
+    "W_r": {
+        "type": "long_inv",
+        "add": 102
+    },
+    "W_r": 104
+}
+*/
 
-float parse_value_float32(uint8_t* value);
+//Parses the modbus response buffer from the start point to a 32 bit inverse long type
+long parse_value_long_inverse_32(uint8_t* strt_ptr);
 
+//Parses the modbus response buffer from the start point to 32 bit float type
+float parse_value_float32(uint8_t* strt_ptr);
+
+//Maps the modbus response to a json with the given json map
 char* mb_map_register_response(const char* json_map, struct mbuf* mb_resp, struct mb_request_info* info);
 
+//Maps the modbus response to a json with the given json map from the file
 char* mb_map_register_responsef(const char* json_file, struct mbuf* mb_resp, struct mb_request_info* info);
 
+//Initialize the modbus connection
 bool mgos_modbus_connect();
 
 #ifdef __cplusplus

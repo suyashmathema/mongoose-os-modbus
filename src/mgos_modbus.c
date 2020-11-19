@@ -18,6 +18,7 @@
 #include "mgos_modbus.h"
 
 #include "crc16.h"
+#include "mgos_rpc.h"
 
 #define bitRead(value, bit) (((value) >> (bit)) & 0x01)
 #define lowByte(w) ((uint8_t)((w)&0xff))
@@ -53,6 +54,12 @@ struct mgos_modbus {
     uint8_t resp_status_u8;
     uint8_t resp_bytes_u8;
     enum uart_read_states read_state;
+};
+
+struct rpc_info {
+    struct mg_rpc_request_info* ri;
+    char* map;
+    char* map_file;
 };
 
 static struct mgos_modbus* s_modbus = NULL;
@@ -587,12 +594,14 @@ int get_buffer_offset(uint16_t read_start_address, uint8_t byte_count, uint16_t 
     int read_qty = byte_count / 2;
     int max_read_address = read_start_address + read_qty - 1;
     if (required_address < read_start_address || required_address >= max_read_address) {
-        LOG(LL_INFO, ("Invalid address, address out of range"));
+        LOG(LL_INFO, ("Invalid address: %d, address out of range, start address - %d, byte count - %d",
+                      required_address, read_start_address, byte_count));
         return -1;
     }
     int diff = required_address - read_start_address;
     if (diff % 2 != 0) {
-        LOG(LL_INFO, ("Invalid address, address value not consistent"));
+        LOG(LL_INFO, ("Invalid address: %d, address value not consistent, start address - %d, byte count - %d",
+                      required_address, read_start_address, byte_count));
         return -1;
     }
     return diff * 2 + 3;
@@ -610,7 +619,6 @@ char* get_attribute_value(struct mbuf* mb_reponse, uint16_t read_start_address, 
     int offset = get_buffer_offset(read_start_address, (uint8_t)mb_reponse->buf[2], required_address);
     LOG(LL_DEBUG, ("Attribute info - offset: %d, address: %d, type: %d", offset, required_address, type));
     if (offset < 0) {
-        LOG(LL_INFO, ("Invalid address"));
         return NULL;
     }
     uint8_t* start_position = (uint8_t*)mb_reponse->buf + offset;
@@ -624,7 +632,7 @@ char* get_attribute_value(struct mbuf* mb_reponse, uint16_t read_start_address, 
             break;
         case MAP_TYPE_HEX:
         default:
-            mg_asprintf(&res, 0, "\"0x%X%X%X%X\"", *start_position,
+            mg_asprintf(&res, 0, "\"0x%.2x%.2x%.2x%.2x\"", *start_position,
                         *(start_position + 1), *(start_position + 2), *(start_position + 3));
             break;
     }
@@ -681,7 +689,10 @@ char* mb_map_register_response(const char* json_map, struct mbuf* mb_resp, struc
             free(attr_value);
         }
     }
-    char* resp = strndup(resp_buf.buf, resp_buf.len);
+    char* resp = NULL;
+    if (resp_buf.len > 0) {
+        resp = strndup(resp_buf.buf, resp_buf.len);
+    }
     mbuf_free(&resp_buf);
     return resp;
 }
@@ -698,6 +709,9 @@ char* mb_map_register_responsef(const char* json_file, struct mbuf* mb_resp, str
 }
 
 bool mgos_modbus_connect() {
+    if (!mgos_sys_config_get_modbus_enable()) {
+        return false;
+    }
     struct mgos_config_modbus* cfg = &mgos_sys_config.modbus;
     struct mgos_uart_config ucfg;
     char b1[8], b2[8], b3[8];
@@ -714,6 +728,97 @@ bool mgos_modbus_connect() {
     return true;
 }
 
+char* mb_resp_to_str(struct mbuf response) {
+    int len = response.len * 2 + 3;
+    int resp_count = 0;
+    char* resp = malloc(len);
+    memset(resp, '\0', len);
+    resp_count += sprintf(resp + resp_count, "\"");
+    for (size_t i = 0; i < response.len && resp_count < len; i++) {
+        resp_count += sprintf(resp + resp_count, "%.2x", response.buf[i]);
+    }
+    resp_count += sprintf(resp + resp_count, "\"");
+    return resp;
+}
+
+void rpc_mb_resp_cb(uint8_t status, struct mb_request_info info, struct mbuf response, void* param) {
+    struct rpc_info* rpc_i = (struct rpc_info*)param;
+    char* resp = NULL;
+    LOG(LL_INFO, ("Modbus.Read rpc response, status: %#02x", status));
+    if (status == RESP_SUCCESS) {
+        if (rpc_i->map != NULL) {
+            resp = mb_map_register_response(rpc_i->map, &response, &info);
+        } else if (rpc_i->map_file != NULL) {
+            resp = mb_map_register_responsef(rpc_i->map_file, &response, &info);
+        } else {
+            resp = mb_resp_to_str(response);
+        }
+    } else {
+        resp = mb_resp_to_str(response);
+    }
+
+    if (resp == NULL) {
+        mg_rpc_send_errorf(rpc_i->ri, 400, "Invalid json map");
+    } else {
+        mg_rpc_send_responsef(rpc_i->ri, "{resp_code:%d, data:%s}", status, resp);
+    }
+
+    free(resp);
+    free(rpc_i->map);
+    free(rpc_i->map_file);
+    free(rpc_i);
+}
+
+static void rpc_modbus_read_handler(struct mg_rpc_request_info* ri, void* cb_arg,
+                                    struct mg_rpc_frame_info* fi, struct mg_str args) {
+    LOG(LL_INFO, ("Modbus.Read rpc called, payload: %.*s", args.len, args.p));
+    int func = -1, id = -1, start = -1, qty = -1;
+    char *map_file = NULL, *map = NULL;
+    json_scanf(args.p, args.len, ri->args_fmt, &func, &id, &start, &qty, &map_file, &map);
+    if (func <= 0) {
+        mg_rpc_send_errorf(ri, 400, "Unsupported function code");
+        goto out;
+    }
+    if (id <= 0) {
+        mg_rpc_send_errorf(ri, 400, "Slave id is required");
+        goto out;
+    }
+    if (start < 0) {
+        mg_rpc_send_errorf(ri, 400, "Read start address is required");
+        goto out;
+    }
+    if (qty <= 0) {
+        mg_rpc_send_errorf(ri, 400, "Read quantity is required");
+        goto out;
+    }
+
+    struct rpc_info* rpc_i = malloc(sizeof(struct rpc_info));
+    rpc_i->ri = ri;
+    rpc_i->map = map;
+    rpc_i->map_file = map_file;
+
+    bool resp = false;
+    if ((uint8_t)func == FUNC_READ_COILS) {
+        resp = mb_read_coils((uint8_t)id, (uint16_t)start, (uint16_t)qty, rpc_mb_resp_cb, rpc_i);
+    } else if ((uint8_t)func == FUNC_READ_DISCRETE_INPUTS) {
+        resp = mb_read_discrete_inputs((uint8_t)id, (uint16_t)start, (uint16_t)qty, rpc_mb_resp_cb, rpc_i);
+    } else if ((uint8_t)func == FUNC_READ_HOLDING_REGISTERS) {
+        resp = mb_read_holding_registers((uint8_t)id, (uint16_t)start, (uint16_t)qty, rpc_mb_resp_cb, rpc_i);
+    } else if ((uint8_t)func == FUNC_READ_INPUT_REGISTERS) {
+        resp = mb_read_input_registers((uint8_t)id, (uint16_t)start, (uint16_t)qty, rpc_mb_resp_cb, rpc_i);
+    }
+    if (!resp) {
+        mg_rpc_send_errorf(ri, 400, "Unable to execute modbus request");
+        free(map);
+        free(map_file);
+        free(rpc_i);
+    }
+out:
+    (void)cb_arg;
+    (void)fi;
+    return;
+}
+
 bool mgos_modbus_init(void) {
     LOG(LL_DEBUG, ("Initializing modbus"));
     if (!mgos_sys_config_get_modbus_enable())
@@ -721,5 +826,9 @@ bool mgos_modbus_init(void) {
     if (!mgos_modbus_create(&mgos_sys_config.modbus)) {
         return false;
     }
+    mg_rpc_add_handler(mgos_rpc_get_global(), "Modbus.Read",
+                       "{func: %d, id:%d, start:%d, qty:%d, filename:%Q, json_map:%Q}",
+                       rpc_modbus_read_handler, NULL);
+
     return true;
 }
